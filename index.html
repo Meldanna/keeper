@@ -11,13 +11,15 @@ body{margin:0;font:15px/1.5 -apple-system,"Segoe UI",Roboto,"Helvetica Neue","No
 .wrap{max-width:1100px;margin:0 auto;padding:20px}
 input,textarea,button,select{font:inherit;color:#16181c;background:#fff;border:1px solid #d3d8de;
      border-radius:8px;padding:8px 11px;outline:none}
-input:focus,textarea:focus{border-color:#2f6fed;box-shadow:0 0 0 3px #2f6fed22}
+input:focus,textarea:focus,select:focus{border-color:#2f6fed;box-shadow:0 0 0 3px #2f6fed22}
 button{cursor:pointer;background:#fff;transition:.12s}
 button:hover{background:#f0f2f5}
 button.primary{background:#2f6fed;border-color:#2f6fed;color:#fff}
 button.primary:hover{background:#255fd6}
 button.danger{background:#fff;border-color:#e0b4b4;color:#b3261e}
 button.danger:hover{background:#fdf1f0}
+button.link{border:none;background:none;color:#2f6fed;padding:4px 2px;font-size:12.5px}
+button.link:hover{background:none;text-decoration:underline}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .gate{max-width:430px;margin:10vh auto;padding:26px;background:#fff;border:1px solid #e2e6ea;
      border-radius:14px;box-shadow:0 1px 3px #0000000d}
@@ -25,6 +27,11 @@ button.danger:hover{background:#fdf1f0}
 .gate p{margin:0 0 18px;color:#6b7280;font-size:13px}
 .gate input,.gate select{width:100%;margin-bottom:10px}
 .gate label{display:block;font-size:12px;color:#6b7280;margin-bottom:4px}
+.gate .sep{border-top:1px solid #eceff2;margin:16px 0 4px}
+.gate .who{background:#f7f9fc;border:1px solid #e8ecf1;border-radius:9px;padding:9px 11px;
+     margin-bottom:12px;font-size:13px}
+.gate .who .id{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#8b929c;
+     word-break:break-all;margin-top:2px}
 .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .bar input[type=search]{flex:1;min-width:200px}
 .st{font-size:12px;color:#8b929c;margin-left:auto}
@@ -75,10 +82,22 @@ dialog textarea{resize:vertical;min-height:58px;font-family:ui-monospace,Menlo,m
 <script>
 "use strict";
 const enc=new TextEncoder(),dec=new TextDecoder();
-const API="https://api.github.com",LS="keeper.device.v1",ITER=600000;
+const API="https://api.github.com",LS="keeper.device.v2",LS_OLD="keeper.device.v1",ITER=600000;
 const PALETTE=["#e8f0fe","#e6f4ea","#fce8e6","#fef7e0","#f3e8fd","#e0f7fa","#fce4ec","#eceff1","#e8f5e9","#fff3e0"];
 
-/* ---------- crypto ---------- */
+/* ---------- 工具 ---------- */
+const el=(t,p={},...kids)=>{const n=Object.assign(document.createElement(t),p);
+  for(const k of kids.flat()) if(k!=null) n.append(k); return n};
+const uid=()=>crypto.randomUUID?crypto.randomUUID():Date.now()+"."+Math.random().toString(16).slice(2);
+const now=()=>new Date().toISOString();
+const app=document.getElementById("app");
+function toast(msg,err){
+  document.querySelectorAll(".toast").forEach(t=>t.remove());
+  const t=el("div",{className:"toast"+(err?" err":""),textContent:msg});
+  document.body.append(t); setTimeout(()=>t.remove(),err?4200:1500);
+}
+
+/* ---------- 加密 ---------- */
 const b64=u=>btoa(String.fromCharCode(...new Uint8Array(u)));
 const ub64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
 async function derive(pass,salt,iter){
@@ -97,8 +116,37 @@ async function open_(blob,pass){
   const pt=await crypto.subtle.decrypt({name:"AES-GCM",iv:ub64(blob.iv)},key,ub64(blob.ct));
   return JSON.parse(dec.decode(pt));
 }
+const isPassErr=m=>/decrypt|operation-specific|OperationError/i.test(m);
 
-/* ---------- github gist ---------- */
+/* ---------- 本机记录（多个 gist） ---------- */
+function devLoad(){
+  try{const d=JSON.parse(localStorage.getItem(LS)); if(d&&Array.isArray(d.profiles))return d}catch(e){}
+  try{ /* 从旧版单条记录迁移 */
+    const o=JSON.parse(localStorage.getItem(LS_OLD));
+    if(o&&o.gistId&&o.pat){
+      const p={id:uid(),label:"我的保险库",gistId:o.gistId,pat:o.pat,addedAt:now(),lastUsed:now()};
+      const d={profiles:[p],last:p.id}; devSave(d); return d;
+    }
+  }catch(e){}
+  return {profiles:[],last:null};
+}
+const devSave=d=>localStorage.setItem(LS,JSON.stringify(d));
+function devUpsert(gistId,label,patBlob){
+  const d=devLoad();
+  let p=d.profiles.find(x=>x.gistId===gistId);
+  if(p){ if(label)p.label=label; p.pat=patBlob }
+  else{ p={id:uid(),label:label||("保险库 "+(d.profiles.length+1)),gistId,pat:patBlob,addedAt:now()};
+        d.profiles.push(p) }
+  p.lastUsed=now(); d.last=p.id; devSave(d); return p;
+}
+function devTouch(id){const d=devLoad();const p=d.profiles.find(x=>x.id===id);
+  if(p){p.lastUsed=now();d.last=id;devSave(d)}}
+function devRemove(id){const d=devLoad();
+  d.profiles=d.profiles.filter(x=>x.id!==id);
+  if(d.last===id) d.last=d.profiles.length?d.profiles[0].id:null;
+  devSave(d); return d;}
+
+/* ---------- GitHub Gist ---------- */
 async function gh(path,opt={}){
   const r=await fetch(API+path,{...opt,headers:{"Authorization":"Bearer "+S.pat,
     "Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28",
@@ -117,107 +165,157 @@ const gistCreate=blob=>gh("/gists",{method:"POST",body:JSON.stringify({
   description:"keeper vault (encrypted)",public:false,
   files:{"vault.json":{content:JSON.stringify(blob,null,1)}}})});
 
-/* ---------- state ---------- */
-const S={pass:null,pat:null,gistId:null,vault:null,rev:0,q:"",filter:new Set(),reveal:new Set(),clipTimer:null};
-const app=document.getElementById("app");
-const devLoad=()=>{try{return JSON.parse(localStorage.getItem(LS))}catch(e){return null}};
-const devSave=d=>localStorage.setItem(LS,JSON.stringify(d));
-const uid=()=>crypto.randomUUID?crypto.randomUUID():Date.now()+"."+Math.random().toString(16).slice(2);
-const el=(t,p={},...kids)=>{const n=Object.assign(document.createElement(t),p);
-  for(const k of kids.flat()) if(k!=null) n.append(k); return n};
-const now=()=>new Date().toISOString();
-function toast(msg,err){
-  document.querySelectorAll(".toast").forEach(t=>t.remove());
-  const t=el("div",{className:"toast"+(err?" err":""),textContent:msg});
-  document.body.append(t); setTimeout(()=>t.remove(),err?4200:1500);
-}
+/* ---------- 状态 ---------- */
+const S={pass:null,pat:null,gistId:null,profile:null,vault:null,rev:0,
+         q:"",filter:new Set(),clipTimer:null};
 const fresh=()=>({rev:1,sites:[],tags:[],updatedAt:now()});
-
-/* 旧结构迁移 */
 function migrate(v){
   if(!v.sites){
-    const tmap=new Map();
-    v.tags=[];
+    const tmap=new Map(); v.tags=[];
     v.sites=(v.items||[]).map(it=>{
       const ids=(it.tags||[]).map(nm=>{
         if(!tmap.has(nm)){const t={id:uid(),name:nm,color:PALETTE[tmap.size%PALETTE.length]};
-          tmap.set(nm,t.id);v.tags.push(t)}
+          tmap.set(nm,t.id); v.tags.push(t)}
         return tmap.get(nm)});
       return {id:it.id||uid(),name:it.name||"",site:it.url||"",baseUrl:"",key:it.value||"",
         note:it.note||"",tags:ids,createdAt:it.createdAt||now(),updatedAt:it.updatedAt||now()};
     });
     delete v.items;
   }
-  v.tags=v.tags||[]; v.sites=v.sites||[];
-  return v;
+  v.tags=v.tags||[]; v.sites=v.sites||[]; return v;
 }
 const tagById=id=>S.vault.tags.find(t=>t.id===id);
 
-/* ---------- 初始化 ---------- */
-function renderSetup(){
+/* ---------- 解锁页 ---------- */
+function renderUnlock(){
+  const dev=devLoad();
+  if(!dev.profiles.length) return renderSetup(false);
   app.innerHTML="";
-  const p1=el("input",{type:"password",placeholder:"至少 12 位，建议 4-5 个不相关的词"});
-  const p2=el("input",{type:"password",placeholder:"再输一次"});
-  const pat=el("input",{type:"password",placeholder:"github_pat_..."});
-  const mode=el("select",{},el("option",{value:"new",textContent:"新建一个 secret gist"}),
-                            el("option",{value:"old",textContent:"使用已有的 gist ID"}));
-  const gid=el("input",{placeholder:"gist ID",style:"display:none"});
-  mode.onchange=()=>gid.style.display=mode.value==="old"?"":"none";
-  const go=el("button",{className:"primary",textContent:"创建保险库",style:"width:100%;margin-top:6px"});
-  go.onclick=async()=>{
-    if(p1.value.length<12) return toast("主口令太短，至少 12 位",1);
-    if(p1.value!==p2.value) return toast("两次输入不一致",1);
-    if(!pat.value.trim()) return toast("请填 PAT",1);
-    go.disabled=true; go.textContent="处理中…";
-    try{
-      S.pass=p1.value; S.pat=pat.value.trim();
-      if(mode.value==="old"){
-        S.gistId=gid.value.trim();
-        S.vault=migrate(await open_(await gistRead(),S.pass)); S.rev=S.vault.rev||0;
-      }else{
-        S.vault=fresh();
-        S.gistId=(await gistCreate(await seal(S.vault,S.pass))).id; S.rev=1;
-      }
-      devSave({gistId:S.gistId,pat:await seal({pat:S.pat},S.pass)});
-      renderMain(); toast("就绪 · gist "+S.gistId);
-    }catch(e){
-      S.pass=S.pat=null; go.disabled=false; go.textContent="创建保险库";
-      toast(/decrypt|operation-specific/i.test(e.message)?"口令错误或数据损坏":e.message,1);
-    }
-  };
-  app.append(el("div",{className:"gate"},el("h2",{textContent:"初始化"}),
-    el("p",{textContent:"主口令不会上传，也无法找回。请先抄在纸上。"}),
-    el("label",{textContent:"主口令"}),p1,
-    el("label",{textContent:"确认主口令"}),p2,
-    el("label",{textContent:"GitHub PAT（权限只需 Gists: read & write）"}),pat,
-    el("label",{textContent:"存储位置"}),mode,gid,go));
-  p1.focus();
-}
+  const box=el("div",{className:"gate"});
+  const many=dev.profiles.length>1;
+  const cur=dev.profiles.find(p=>p.id===dev.last)||dev.profiles[0];
 
-/* ---------- 解锁 ---------- */
-function renderUnlock(dev){
-  app.innerHTML="";
+  const sel=el("select");
+  for(const p of dev.profiles)
+    sel.append(el("option",{value:p.id,textContent:p.label}));
+  sel.value=cur.id;
+
+  const who=el("div",{className:"who"});
+  function drawWho(){
+    const p=dev.profiles.find(x=>x.id===sel.value);
+    if(!p) return;
+    who.innerHTML="";
+    const cp=el("button",{className:"link",style:"font-size:11.5px;padding:2px 0",
+      textContent:"复制 ID",onclick:()=>copy(p.gistId,"gist ID")});
+    const op=el("button",{className:"link",style:"font-size:11.5px;padding:2px 0",
+      textContent:"在 GitHub 打开",
+      onclick:()=>window.open("https://gist.github.com/"+p.gistId,"_blank","noopener")});
+    who.append(
+      el("div",{textContent:p.label}),
+      el("div",{className:"id",textContent:p.gistId}),
+      el("div",{className:"row",style:"gap:14px;margin-top:2px"},cp,op));
+  }
+
   const pw=el("input",{type:"password",placeholder:"主口令"});
   const go=el("button",{className:"primary",textContent:"解锁",style:"width:100%"});
-  const reset=el("button",{textContent:"忘记口令 / 换设备重置",style:"width:100%;margin-top:8px;font-size:12px"});
-  reset.onclick=()=>{if(confirm("只清除本机缓存的 PAT 和 gist ID，云端数据不动。继续？")){
-    localStorage.removeItem(LS); renderSetup()}};
+  sel.onchange=()=>{drawWho();pw.focus()};
+  drawWho();
+
   const unlock=async()=>{
+    const p=dev.profiles.find(x=>x.id===sel.value);
     go.disabled=true; go.textContent="解密中…";
     try{
       S.pass=pw.value;
-      S.pat=(await open_(dev.pat,S.pass)).pat; S.gistId=dev.gistId;
+      S.pat=(await open_(p.pat,S.pass)).pat;
+      S.gistId=p.gistId; S.profile=p;
       S.vault=migrate(await open_(await gistRead(),S.pass)); S.rev=S.vault.rev||0;
-      renderMain();
+      devTouch(p.id); renderMain();
     }catch(e){
-      S.pass=S.pat=null; go.disabled=false; go.textContent="解锁"; pw.select();
-      toast(/decrypt|operation-specific/i.test(e.message)?"口令错误":e.message,1);
+      S.pass=S.pat=S.gistId=S.profile=null;
+      go.disabled=false; go.textContent="解锁"; pw.select();
+      toast(isPassErr(e.message)?"口令错误":e.message,1);
     }
   };
   go.onclick=unlock; pw.onkeydown=e=>{if(e.key==="Enter")unlock()};
-  app.append(el("div",{className:"gate"},el("h2",{textContent:"Keeper"}),
-    el("p",{textContent:"输入主口令解锁"}),pw,go,reset));
+
+  const add=el("button",{className:"link",textContent:"＋ 添加另一个 gist",
+    onclick:()=>renderSetup(true)});
+  const rm=el("button",{className:"link",style:"color:#b3261e",textContent:"移除本机的这条记录"});
+  rm.onclick=()=>{
+    const p=dev.profiles.find(x=>x.id===sel.value);
+    if(!confirm("从这台设备移除「"+p.label+"」？\n只清本机记录，云端 gist 里的数据不动，随时可以用 gist ID 重新添加。"))return;
+    devRemove(p.id); renderUnlock();
+  };
+
+  box.append(el("h2",{textContent:"Keeper"}),
+    el("p",{textContent:many?"选择保险库并输入主口令":"输入主口令解锁"}),
+    many?el("label",{textContent:"保险库"}):null, many?sel:null,
+    who,
+    el("label",{textContent:"主口令"}), pw, go,
+    el("div",{className:"sep"}),
+    el("div",{className:"row",style:"justify-content:space-between"},add,rm));
+  app.append(box);
   setTimeout(()=>pw.focus(),0);
+}
+
+/* ---------- 新建 / 添加 ---------- */
+function renderSetup(canCancel){
+  app.innerHTML="";
+  const label=el("input",{placeholder:"给它起个名字，如 主库 / 备用库"});
+  const p1=el("input",{type:"password",placeholder:"至少 12 位，建议 4-5 个不相关的词"});
+  const p2=el("input",{type:"password",placeholder:"再输一次"});
+  const pat=el("input",{type:"password",placeholder:"github_pat_... 或 ghp_..."});
+  const mode=el("select",{},el("option",{value:"old",textContent:"添加已有的 gist（填 gist ID）"}),
+                            el("option",{value:"new",textContent:"新建一个 secret gist"}));
+  const gid=el("input",{placeholder:"32 位 gist ID"});
+  const p2wrap=el("div",{},el("label",{textContent:"确认主口令"}),p2);
+  const gidwrap=el("div",{},el("label",{textContent:"gist ID"}),gid);
+  const sync=()=>{const isNew=mode.value==="new";
+    gidwrap.style.display=isNew?"none":""; p2wrap.style.display=isNew?"":"none";
+    go.textContent=isNew?"创建保险库":"添加保险库"};
+  const go=el("button",{className:"primary",style:"width:100%;margin-top:6px"});
+  mode.onchange=sync;
+
+  go.onclick=async()=>{
+    const isNew=mode.value==="new";
+    if(p1.value.length<12) return toast("主口令太短，至少 12 位",1);
+    if(isNew&&p1.value!==p2.value) return toast("两次输入不一致",1);
+    if(!pat.value.trim()) return toast("请填 PAT",1);
+    if(!isNew&&!gid.value.trim()) return toast("请填 gist ID",1);
+    go.disabled=true; go.textContent="处理中…";
+    try{
+      S.pass=p1.value; S.pat=pat.value.trim();
+      if(isNew){
+        S.vault=fresh();
+        S.gistId=(await gistCreate(await seal(S.vault,S.pass))).id; S.rev=1;
+      }else{
+        S.gistId=gid.value.trim().replace(/^.*\//,"");
+        S.vault=migrate(await open_(await gistRead(),S.pass)); S.rev=S.vault.rev||0;
+      }
+      S.profile=devUpsert(S.gistId,label.value.trim(),await seal({pat:S.pat},S.pass));
+      renderMain();
+      toast(isNew?"已创建 · gist "+S.gistId:"已添加 · "+S.profile.label);
+    }catch(e){
+      S.pass=S.pat=S.gistId=S.profile=null; go.disabled=false; sync();
+      toast(isPassErr(e.message)?"口令错误或数据损坏":e.message,1);
+    }
+  };
+
+  const box=el("div",{className:"gate"},
+    el("h2",{textContent:canCancel?"添加保险库":"初始化"}),
+    el("p",{textContent:"主口令不会上传，也无法找回。请先抄在纸上。"}),
+    el("label",{textContent:"存储位置"}),mode,
+    gidwrap,
+    el("label",{textContent:"名称（可留空）"}),label,
+    el("label",{textContent:"主口令"}),p1,
+    p2wrap,
+    el("label",{textContent:"GitHub PAT（权限只需 gist）"}),pat,
+    go,
+    canCancel?el("button",{className:"link",textContent:"← 返回解锁",
+      style:"width:100%;margin-top:10px",onclick:renderUnlock}):null);
+  app.append(box); sync();
+  if(!canCancel) mode.value="new",sync();
+  (canCancel?gid:p1).focus();
 }
 
 /* ---------- 主界面 ---------- */
@@ -232,7 +330,7 @@ function renderMain(){
       el("button",{textContent:"管理标签",onclick:manageTags}),
       el("button",{textContent:"同步",onclick:()=>pull(true)}),
       el("button",{textContent:"备份",onclick:exportJSON}),
-      el("button",{textContent:"锁定",onclick:lock}),
+      el("button",{textContent:"切换 / 锁定",onclick:lock}),
       el("span",{className:"st",id:"st"})),
     el("div",{className:"filters",id:"filters"}),
     el("div",{className:"grid",id:"grid"}));
@@ -241,7 +339,7 @@ function renderMain(){
   idleReset();
 }
 const setStatus=t=>{const n=document.getElementById("st");
-  if(n)n.textContent=t||(S.vault.sites.length+" 个站点 · rev "+S.rev)};
+  if(n)n.textContent=t||((S.profile?S.profile.label+" · ":"")+S.vault.sites.length+" 个站点 · rev "+S.rev)};
 
 function drawFilters(){
   const box=document.getElementById("filters"); if(!box)return;
@@ -267,16 +365,13 @@ function field(label,value,opts={}){
   if(has&&opts.open) btns.append(el("button",{textContent:"打开",title:"在新标签页打开",
     onclick:()=>window.open(value,"_blank","noopener")}));
   if(has&&opts.mask){
-    const eye=el("button",{textContent:opts.shown?"隐藏":"显示"});
-    eye.onclick=()=>{
-      const nowShown=vspan.textContent===value;
-      vspan.textContent=nowShown?"•".repeat(Math.min(30,value.length)):value;
-      eye.textContent=nowShown?"显示":"隐藏";
-    };
+    const eye=el("button",{textContent:"显示"});
+    eye.onclick=()=>{const shown=vspan.textContent===value;
+      vspan.textContent=shown?"•".repeat(Math.min(30,value.length)):value;
+      eye.textContent=shown?"显示":"隐藏"};
     btns.append(eye);
   }
-  if(has) btns.append(el("button",{textContent:"复制",
-    onclick:()=>copy(value,label,!!opts.mask)}));
+  if(has) btns.append(el("button",{textContent:"复制",onclick:()=>copy(value,label,!!opts.mask)}));
   return el("div",{className:"fld"},el("span",{className:"lbl",textContent:label}),vspan,btns);
 }
 
@@ -322,8 +417,7 @@ async function copy(text,label,secret){
 
 /* ---------- 编辑站点 ---------- */
 function editSite(s){
-  const isNew=!s;
-  const chosen=new Set(s?s.tags||[]:[]);
+  const isNew=!s, chosen=new Set(s?s.tags||[]:[]);
   const d=el("dialog");
   const f={name:el("input",{value:s?s.name||"":"",placeholder:"站点名称"}),
     site:el("input",{value:s?s.site||"":"",placeholder:"https://站点主页"}),
@@ -344,26 +438,20 @@ function editSite(s){
     }
   }
   drawTagPicker();
-  /* 内联新建标签 */
   let pick=PALETTE[S.vault.tags.length%PALETTE.length];
   const swWrap=el("div",{className:"row",style:"gap:5px"});
-  function drawSw(){
-    swWrap.innerHTML="";
-    for(const c of PALETTE){
-      const b=el("button",{className:"sw"+(c===pick?" sel":""),style:"background:"+c,title:c});
-      b.onclick=()=>{pick=c;drawSw()}; swWrap.append(b);
-    }
-  }
+  function drawSw(){swWrap.innerHTML="";
+    for(const c of PALETTE){const b=el("button",{className:"sw"+(c===pick?" sel":""),
+      style:"background:"+c,title:c}); b.onclick=()=>{pick=c;drawSw()}; swWrap.append(b)}}
   drawSw();
   const newName=el("input",{placeholder:"新标签名，如 gemini"});
   const addTag=el("button",{textContent:"新建"});
   addTag.onclick=()=>{
-    const nm=newName.value.trim(); if(!nm) return;
+    const nm=newName.value.trim(); if(!nm)return;
     if(S.vault.tags.some(t=>t.name===nm)) return toast("标签已存在",1);
     const t={id:uid(),name:nm,color:pick};
     S.vault.tags.push(t); chosen.add(t.id); newName.value="";
-    pick=PALETTE[S.vault.tags.length%PALETTE.length];
-    drawSw(); drawTagPicker();
+    pick=PALETTE[S.vault.tags.length%PALETTE.length]; drawSw(); drawTagPicker();
   };
   newName.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();addTag.onclick()}};
 
@@ -399,7 +487,7 @@ function editSite(s){
 
 /* ---------- 管理标签 ---------- */
 function manageTags(){
-  const d=el("dialog"); const body=el("div");
+  const d=el("dialog"), body=el("div");
   function draw(){
     body.innerHTML="";
     if(!S.vault.tags.length) body.append(el("div",{style:"font-size:13px;color:#8b929c;margin-top:10px",
@@ -408,10 +496,8 @@ function manageTags(){
       const nameIn=el("input",{value:t.name});
       nameIn.onchange=()=>{const v=nameIn.value.trim(); if(v)t.name=v; else nameIn.value=t.name};
       const sw=el("div",{className:"row",style:"gap:4px"});
-      for(const c of PALETTE){
-        const b=el("button",{className:"sw"+(c===t.color?" sel":""),style:"background:"+c});
-        b.onclick=()=>{t.color=c;draw()}; sw.append(b);
-      }
+      for(const c of PALETTE){const b=el("button",{className:"sw"+(c===t.color?" sel":""),
+        style:"background:"+c}); b.onclick=()=>{t.color=c;draw()}; sw.append(b)}
       const rm=el("button",{className:"danger",textContent:"删除"});
       rm.onclick=()=>{
         const used=S.vault.sites.filter(s=>(s.tags||[]).includes(t.id)).length;
@@ -470,7 +556,7 @@ function exportJSON(){
 function lock(){
   clearInterval(window.__poll); clearTimeout(window.__idle);
   document.querySelectorAll("dialog").forEach(d=>d.remove());
-  S.pass=S.pat=S.vault=null; S.reveal.clear(); S.q=""; S.filter.clear();
+  S.pass=S.pat=S.gistId=S.profile=S.vault=null; S.q=""; S.filter.clear();
   boot();
 }
 function idleReset(){
@@ -481,8 +567,7 @@ function idleReset(){
 
 function boot(){
   if(!crypto.subtle){app.innerHTML="<div class=gate>需要 HTTPS 或本地文件环境才能使用加密功能。</div>";return}
-  const dev=devLoad();
-  dev&&dev.pat&&dev.gistId?renderUnlock(dev):renderSetup();
+  renderUnlock();
 }
 boot();
 </script>
