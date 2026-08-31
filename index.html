@@ -247,13 +247,13 @@ function renderUnlock(){
     devRemove(p.id); renderUnlock();
   };
 
-  box.append(el("h2",{textContent:"Keeper"}),
-    el("p",{textContent:many?"选择保险库并输入主口令":"输入主口令解锁"}),
-    many?el("label",{textContent:"保险库"}):null, many?sel:null,
-    who,
-    el("label",{textContent:"主口令"}), pw, go,
+  const kids=[el("h2",{textContent:"Keeper"}),
+    el("p",{textContent:many?"选择保险库并输入主口令":"输入主口令解锁"})];
+  if(many) kids.push(el("label",{textContent:"保险库"}),sel);
+  kids.push(who,el("label",{textContent:"主口令"}),pw,go,
     el("div",{className:"sep"}),
     el("div",{className:"row",style:"justify-content:space-between"},add,rm));
+  box.append(...kids);
   app.append(box);
   setTimeout(()=>pw.focus(),0);
 }
