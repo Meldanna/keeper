@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Keeper</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 -apple-system,"Segoe UI",Roboto,"Helvetica Neue","Noto Sans SC",sans-serif;
+     background:#f5f6f8;color:#16181c}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+input,textarea,button,select{font:inherit;color:#16181c;background:#fff;border:1px solid #d3d8de;
+     border-radius:8px;padding:8px 11px;outline:none}
+input:focus,textarea:focus{border-color:#2f6fed;box-shadow:0 0 0 3px #2f6fed22}
+button{cursor:pointer;background:#fff;transition:.12s}
+button:hover{background:#f0f2f5}
+button.primary{background:#2f6fed;border-color:#2f6fed;color:#fff}
+button.primary:hover{background:#255fd6}
+button.danger{background:#fff;border-color:#e0b4b4;color:#b3261e}
+button.danger:hover{background:#fdf1f0}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.gate{max-width:430px;margin:10vh auto;padding:26px;background:#fff;border:1px solid #e2e6ea;
+     border-radius:14px;box-shadow:0 1px 3px #0000000d}
+.gate h2{margin:0 0 4px;font-size:18px}
+.gate p{margin:0 0 18px;color:#6b7280;font-size:13px}
+.gate input,.gate select{width:100%;margin-bottom:10px}
+.gate label{display:block;font-size:12px;color:#6b7280;margin-bottom:4px}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.bar input[type=search]{flex:1;min-width:200px}
+.st{font-size:12px;color:#8b929c;margin-left:auto}
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 0;align-items:center}
+.filters .hint{font-size:12px;color:#8b929c;margin-right:2px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-top:16px}
+.card{background:#fff;border:1px solid #e2e6ea;border-radius:12px;padding:14px;
+     box-shadow:0 1px 2px #0000000a}
+.card .hd{display:flex;align-items:flex-start;gap:8px;margin-bottom:4px}
+.card .nm{font-weight:600;font-size:15px;flex:1;word-break:break-all}
+.card .ed{padding:2px 8px;font-size:12px;border-radius:6px;color:#6b7280}
+.tags{display:flex;gap:5px;flex-wrap:wrap;margin:6px 0 2px}
+.tag{font-size:12px;padding:1px 9px;border-radius:99px;border:1px solid #0000000f;
+     white-space:nowrap;line-height:1.55}
+button.tag{cursor:pointer}
+button.tag.off{background:#fff!important;color:#8b929c!important;border-color:#d3d8de}
+.fld{display:flex;align-items:center;gap:8px;border:1px solid #e6e9ed;border-radius:9px;
+     padding:7px 8px 7px 10px;margin-top:8px;background:#fbfcfd}
+.fld .lbl{font-size:11px;color:#8b929c;flex:0 0 34px}
+.fld .val{flex:1;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
+     overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#2b3038}
+.fld .val.dim{color:#b6bcc4}
+.fld .btns{display:flex;gap:4px;flex:0 0 auto}
+.fld button{padding:3px 8px;font-size:12px;border-radius:6px;line-height:1.4}
+.note{font-size:12px;color:#79808a;margin-top:9px;word-break:break-all}
+.empty{text-align:center;color:#8b929c;padding:52px 0;font-size:14px;grid-column:1/-1}
+.warn{background:#fffaeb;border:1px solid #f5e3b3;color:#7a5c11;font-size:12px;
+     padding:9px 12px;border-radius:8px;margin-bottom:14px}
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#1d7a45;color:#fff;
+     padding:9px 18px;border-radius:99px;font-size:13px;box-shadow:0 4px 18px #0003;z-index:99}
+.toast.err{background:#b3261e}
+dialog{background:#fff;color:#16181c;border:1px solid #e2e6ea;border-radius:14px;
+     padding:22px;width:min(500px,93vw);box-shadow:0 12px 40px #0002}
+dialog::backdrop{background:#0006}
+dialog h2{margin:0;font-size:16px}
+dialog label{display:block;font-size:12px;color:#6b7280;margin:12px 0 4px}
+dialog input,dialog textarea{width:100%}
+dialog textarea{resize:vertical;min-height:58px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+.sw{width:22px;height:22px;border-radius:6px;border:1px solid #0000001a;cursor:pointer;padding:0}
+.sw.sel{outline:2px solid #2f6fed;outline-offset:1px}
+.tgrow{display:flex;gap:8px;align-items:center;margin-top:8px;padding:8px;border:1px solid #eceff2;
+     border-radius:9px}
+.tgrow input{flex:1}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+<script>
+"use strict";
+const enc=new TextEncoder(),dec=new TextDecoder();
+const API="https://api.github.com",LS="keeper.device.v1",ITER=600000;
+const PALETTE=["#e8f0fe","#e6f4ea","#fce8e6","#fef7e0","#f3e8fd","#e0f7fa","#fce4ec","#eceff1","#e8f5e9","#fff3e0"];
+
+/* ---------- crypto ---------- */
+const b64=u=>btoa(String.fromCharCode(...new Uint8Array(u)));
+const ub64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+async function derive(pass,salt,iter){
+  const base=await crypto.subtle.importKey("raw",enc.encode(pass),"PBKDF2",false,["deriveKey"]);
+  return crypto.subtle.deriveKey({name:"PBKDF2",salt,iterations:iter,hash:"SHA-256"},
+    base,{name:"AES-GCM",length:256},false,["encrypt","decrypt"]);
+}
+async function seal(obj,pass){
+  const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12));
+  const key=await derive(pass,salt,ITER);
+  const ct=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,enc.encode(JSON.stringify(obj)));
+  return {v:1,kdf:"PBKDF2-SHA256",iter:ITER,salt:b64(salt),iv:b64(iv),ct:b64(ct)};
+}
+async function open_(blob,pass){
+  const key=await derive(pass,ub64(blob.salt),blob.iter||ITER);
+  const pt=await crypto.subtle.decrypt({name:"AES-GCM",iv:ub64(blob.iv)},key,ub64(blob.ct));
+  return JSON.parse(dec.decode(pt));
+}
+
+/* ---------- github gist ---------- */
+async function gh(path,opt={}){
+  const r=await fetch(API+path,{...opt,headers:{"Authorization":"Bearer "+S.pat,
+    "Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28",
+    ...(opt.body?{"Content-Type":"application/json"}:{})}});
+  if(!r.ok){let m=r.status+"";try{m+=" "+(await r.json()).message}catch(e){}throw new Error("GitHub: "+m)}
+  return r.json();
+}
+async function gistRead(){
+  const g=await gh("/gists/"+S.gistId),f=g.files&&g.files["vault.json"];
+  if(!f) throw new Error("gist 里没有 vault.json");
+  return JSON.parse(f.truncated?await(await fetch(f.raw_url)).text():f.content);
+}
+const gistWrite=blob=>gh("/gists/"+S.gistId,{method:"PATCH",
+  body:JSON.stringify({files:{"vault.json":{content:JSON.stringify(blob,null,1)}}})});
+const gistCreate=blob=>gh("/gists",{method:"POST",body:JSON.stringify({
+  description:"keeper vault (encrypted)",public:false,
+  files:{"vault.json":{content:JSON.stringify(blob,null,1)}}})});
+
+/* ---------- state ---------- */
+const S={pass:null,pat:null,gistId:null,vault:null,rev:0,q:"",filter:new Set(),reveal:new Set(),clipTimer:null};
+const app=document.getElementById("app");
+const devLoad=()=>{try{return JSON.parse(localStorage.getItem(LS))}catch(e){return null}};
+const devSave=d=>localStorage.setItem(LS,JSON.stringify(d));
+const uid=()=>crypto.randomUUID?crypto.randomUUID():Date.now()+"."+Math.random().toString(16).slice(2);
+const el=(t,p={},...kids)=>{const n=Object.assign(document.createElement(t),p);
+  for(const k of kids.flat()) if(k!=null) n.append(k); return n};
+const now=()=>new Date().toISOString();
+function toast(msg,err){
+  document.querySelectorAll(".toast").forEach(t=>t.remove());
+  const t=el("div",{className:"toast"+(err?" err":""),textContent:msg});
+  document.body.append(t); setTimeout(()=>t.remove(),err?4200:1500);
+}
+const fresh=()=>({rev:1,sites:[],tags:[],updatedAt:now()});
+
+/* 旧结构迁移 */
+function migrate(v){
+  if(!v.sites){
+    const tmap=new Map();
+    v.tags=[];
+    v.sites=(v.items||[]).map(it=>{
+      const ids=(it.tags||[]).map(nm=>{
+        if(!tmap.has(nm)){const t={id:uid(),name:nm,color:PALETTE[tmap.size%PALETTE.length]};
+          tmap.set(nm,t.id);v.tags.push(t)}
+        return tmap.get(nm)});
+      return {id:it.id||uid(),name:it.name||"",site:it.url||"",baseUrl:"",key:it.value||"",
+        note:it.note||"",tags:ids,createdAt:it.createdAt||now(),updatedAt:it.updatedAt||now()};
+    });
+    delete v.items;
+  }
+  v.tags=v.tags||[]; v.sites=v.sites||[];
+  return v;
+}
+const tagById=id=>S.vault.tags.find(t=>t.id===id);
+
+/* ---------- 初始化 ---------- */
+function renderSetup(){
+  app.innerHTML="";
+  const p1=el("input",{type:"password",placeholder:"至少 12 位，建议 4-5 个不相关的词"});
+  const p2=el("input",{type:"password",placeholder:"再输一次"});
+  const pat=el("input",{type:"password",placeholder:"github_pat_..."});
+  const mode=el("select",{},el("option",{value:"new",textContent:"新建一个 secret gist"}),
+                            el("option",{value:"old",textContent:"使用已有的 gist ID"}));
+  const gid=el("input",{placeholder:"gist ID",style:"display:none"});
+  mode.onchange=()=>gid.style.display=mode.value==="old"?"":"none";
+  const go=el("button",{className:"primary",textContent:"创建保险库",style:"width:100%;margin-top:6px"});
+  go.onclick=async()=>{
+    if(p1.value.length<12) return toast("主口令太短，至少 12 位",1);
+    if(p1.value!==p2.value) return toast("两次输入不一致",1);
+    if(!pat.value.trim()) return toast("请填 PAT",1);
+    go.disabled=true; go.textContent="处理中…";
+    try{
+      S.pass=p1.value; S.pat=pat.value.trim();
+      if(mode.value==="old"){
+        S.gistId=gid.value.trim();
+        S.vault=migrate(await open_(await gistRead(),S.pass)); S.rev=S.vault.rev||0;
+      }else{
+        S.vault=fresh();
+        S.gistId=(await gistCreate(await seal(S.vault,S.pass))).id; S.rev=1;
+      }
+      devSave({gistId:S.gistId,pat:await seal({pat:S.pat},S.pass)});
+      renderMain(); toast("就绪 · gist "+S.gistId);
+    }catch(e){
+      S.pass=S.pat=null; go.disabled=false; go.textContent="创建保险库";
+      toast(/decrypt|operation-specific/i.test(e.message)?"口令错误或数据损坏":e.message,1);
+    }
+  };
+  app.append(el("div",{className:"gate"},el("h2",{textContent:"初始化"}),
+    el("p",{textContent:"主口令不会上传，也无法找回。请先抄在纸上。"}),
+    el("label",{textContent:"主口令"}),p1,
+    el("label",{textContent:"确认主口令"}),p2,
+    el("label",{textContent:"GitHub PAT（权限只需 Gists: read & write）"}),pat,
+    el("label",{textContent:"存储位置"}),mode,gid,go));
+  p1.focus();
+}
+
+/* ---------- 解锁 ---------- */
+function renderUnlock(dev){
+  app.innerHTML="";
+  const pw=el("input",{type:"password",placeholder:"主口令"});
+  const go=el("button",{className:"primary",textContent:"解锁",style:"width:100%"});
+  const reset=el("button",{textContent:"忘记口令 / 换设备重置",style:"width:100%;margin-top:8px;font-size:12px"});
+  reset.onclick=()=>{if(confirm("只清除本机缓存的 PAT 和 gist ID，云端数据不动。继续？")){
+    localStorage.removeItem(LS); renderSetup()}};
+  const unlock=async()=>{
+    go.disabled=true; go.textContent="解密中…";
+    try{
+      S.pass=pw.value;
+      S.pat=(await open_(dev.pat,S.pass)).pat; S.gistId=dev.gistId;
+      S.vault=migrate(await open_(await gistRead(),S.pass)); S.rev=S.vault.rev||0;
+      renderMain();
+    }catch(e){
+      S.pass=S.pat=null; go.disabled=false; go.textContent="解锁"; pw.select();
+      toast(/decrypt|operation-specific/i.test(e.message)?"口令错误":e.message,1);
+    }
+  };
+  go.onclick=unlock; pw.onkeydown=e=>{if(e.key==="Enter")unlock()};
+  app.append(el("div",{className:"gate"},el("h2",{textContent:"Keeper"}),
+    el("p",{textContent:"输入主口令解锁"}),pw,go,reset));
+  setTimeout(()=>pw.focus(),0);
+}
+
+/* ---------- 主界面 ---------- */
+function renderMain(){
+  app.innerHTML="";
+  const search=el("input",{type:"search",placeholder:"搜索站点 / 网址 / 标签 / 备注…",value:S.q});
+  search.oninput=()=>{S.q=search.value;drawGrid()};
+  app.append(
+    el("div",{className:"warn"},"点各行末尾「复制」即取用。复制密钥后 60 秒自动清空剪贴板，闲置 5 分钟自动锁定。"),
+    el("div",{className:"bar"},search,
+      el("button",{className:"primary",textContent:"+ 新增站点",onclick:()=>editSite(null)}),
+      el("button",{textContent:"管理标签",onclick:manageTags}),
+      el("button",{textContent:"同步",onclick:()=>pull(true)}),
+      el("button",{textContent:"备份",onclick:exportJSON}),
+      el("button",{textContent:"锁定",onclick:lock}),
+      el("span",{className:"st",id:"st"})),
+    el("div",{className:"filters",id:"filters"}),
+    el("div",{className:"grid",id:"grid"}));
+  drawFilters(); drawGrid(); setStatus();
+  clearInterval(window.__poll); window.__poll=setInterval(()=>{if(!document.hidden)pull(false)},30000);
+  idleReset();
+}
+const setStatus=t=>{const n=document.getElementById("st");
+  if(n)n.textContent=t||(S.vault.sites.length+" 个站点 · rev "+S.rev)};
+
+function drawFilters(){
+  const box=document.getElementById("filters"); if(!box)return;
+  box.innerHTML="";
+  if(!S.vault.tags.length)return;
+  box.append(el("span",{className:"hint",textContent:"按标签筛选："}));
+  for(const t of S.vault.tags){
+    const on=S.filter.has(t.id);
+    const b=el("button",{className:"tag"+(on?"":" off"),textContent:t.name,
+      style:on?"background:"+t.color:""});
+    b.onclick=()=>{on?S.filter.delete(t.id):S.filter.add(t.id);drawFilters();drawGrid()};
+    box.append(b);
+  }
+  if(S.filter.size) box.append(el("button",{className:"tag off",textContent:"清除",
+    onclick:()=>{S.filter.clear();drawFilters();drawGrid()}}));
+}
+
+function field(label,value,opts={}){
+  const has=!!(value&&value.trim());
+  const vspan=el("span",{className:"val"+(has?"":" dim"),
+    textContent:has?(opts.mask?"•".repeat(Math.min(30,value.length)):value):"—"});
+  const btns=el("div",{className:"btns"});
+  if(has&&opts.open) btns.append(el("button",{textContent:"打开",title:"在新标签页打开",
+    onclick:()=>window.open(value,"_blank","noopener")}));
+  if(has&&opts.mask){
+    const eye=el("button",{textContent:opts.shown?"隐藏":"显示"});
+    eye.onclick=()=>{
+      const nowShown=vspan.textContent===value;
+      vspan.textContent=nowShown?"•".repeat(Math.min(30,value.length)):value;
+      eye.textContent=nowShown?"显示":"隐藏";
+    };
+    btns.append(eye);
+  }
+  if(has) btns.append(el("button",{textContent:"复制",
+    onclick:()=>copy(value,label,!!opts.mask)}));
+  return el("div",{className:"fld"},el("span",{className:"lbl",textContent:label}),vspan,btns);
+}
+
+function drawGrid(){
+  const g=document.getElementById("grid"); if(!g)return;
+  g.innerHTML="";
+  const q=S.q.trim().toLowerCase();
+  const list=S.vault.sites.filter(s=>{
+    for(const id of S.filter) if(!(s.tags||[]).includes(id)) return false;
+    if(!q) return true;
+    const tn=(s.tags||[]).map(id=>{const t=tagById(id);return t?t.name:""}).join(" ");
+    return [s.name,s.site,s.baseUrl,s.note,tn].join(" ").toLowerCase().includes(q);
+  });
+  if(!list.length){g.append(el("div",{className:"empty",textContent:
+    S.vault.sites.length?"没有匹配的站点":"还没有站点，点「+ 新增站点」开始"}));return}
+  for(const s of list){
+    const tagRow=el("div",{className:"tags"});
+    for(const id of s.tags||[]){const t=tagById(id); if(t)
+      tagRow.append(el("span",{className:"tag",textContent:t.name,style:"background:"+t.color}))}
+    g.append(el("div",{className:"card"},
+      el("div",{className:"hd"},el("div",{className:"nm",textContent:s.name||"(未命名)"}),
+        el("button",{className:"ed",textContent:"编辑",onclick:()=>editSite(s)})),
+      tagRow.childNodes.length?tagRow:null,
+      field("网址",s.site,{open:true}),
+      field("URL",s.baseUrl,{}),
+      field("密钥",s.key,{mask:true}),
+      s.note?el("div",{className:"note",textContent:s.note}):null));
+  }
+}
+
+/* ---------- 剪贴板 ---------- */
+async function copy(text,label,secret){
+  try{
+    if(navigator.clipboard&&window.isSecureContext) await navigator.clipboard.writeText(text);
+    else{const ta=el("textarea",{value:text,style:"position:fixed;opacity:0"});
+      document.body.append(ta);ta.select();document.execCommand("copy");ta.remove()}
+    toast("已复制"+(label?" · "+label:""));
+    if(secret){clearTimeout(S.clipTimer);
+      S.clipTimer=setTimeout(()=>{navigator.clipboard&&navigator.clipboard.writeText("").catch(()=>{})},60000)}
+  }catch(e){toast("复制失败，请点「显示」后手动选择",1)}
+  idleReset();
+}
+
+/* ---------- 编辑站点 ---------- */
+function editSite(s){
+  const isNew=!s;
+  const chosen=new Set(s?s.tags||[]:[]);
+  const d=el("dialog");
+  const f={name:el("input",{value:s?s.name||"":"",placeholder:"站点名称"}),
+    site:el("input",{value:s?s.site||"":"",placeholder:"https://站点主页"}),
+    baseUrl:el("input",{value:s?s.baseUrl||"":"",placeholder:"https://xxx.com/v1"}),
+    key:el("textarea",{value:s?s.key||"":"",placeholder:"sk-..."}),
+    note:el("input",{value:s?s.note||"":"",placeholder:"额度 / 签到规则 / 注意事项"})};
+  const tagBox=el("div",{className:"tags",style:"margin-top:4px"});
+  function drawTagPicker(){
+    tagBox.innerHTML="";
+    if(!S.vault.tags.length) tagBox.append(el("span",{style:"font-size:12px;color:#8b929c",
+      textContent:"还没有标签，用下面的输入框新建"}));
+    for(const t of S.vault.tags){
+      const on=chosen.has(t.id);
+      const b=el("button",{className:"tag"+(on?"":" off"),textContent:t.name,
+        style:on?"background:"+t.color:""});
+      b.onclick=()=>{on?chosen.delete(t.id):chosen.add(t.id);drawTagPicker()};
+      tagBox.append(b);
+    }
+  }
+  drawTagPicker();
+  /* 内联新建标签 */
+  let pick=PALETTE[S.vault.tags.length%PALETTE.length];
+  const swWrap=el("div",{className:"row",style:"gap:5px"});
+  function drawSw(){
+    swWrap.innerHTML="";
+    for(const c of PALETTE){
+      const b=el("button",{className:"sw"+(c===pick?" sel":""),style:"background:"+c,title:c});
+      b.onclick=()=>{pick=c;drawSw()}; swWrap.append(b);
+    }
+  }
+  drawSw();
+  const newName=el("input",{placeholder:"新标签名，如 gemini"});
+  const addTag=el("button",{textContent:"新建"});
+  addTag.onclick=()=>{
+    const nm=newName.value.trim(); if(!nm) return;
+    if(S.vault.tags.some(t=>t.name===nm)) return toast("标签已存在",1);
+    const t={id:uid(),name:nm,color:pick};
+    S.vault.tags.push(t); chosen.add(t.id); newName.value="";
+    pick=PALETTE[S.vault.tags.length%PALETTE.length];
+    drawSw(); drawTagPicker();
+  };
+  newName.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();addTag.onclick()}};
+
+  const save=el("button",{className:"primary",textContent:"保存"});
+  save.onclick=async()=>{
+    if(!f.name.value.trim()) return toast("站点名称不能为空",1);
+    const rec={id:s?s.id:uid(),name:f.name.value.trim(),site:f.site.value.trim(),
+      baseUrl:f.baseUrl.value.trim(),key:f.key.value.trim(),note:f.note.value.trim(),
+      tags:[...chosen],createdAt:s?s.createdAt:now(),updatedAt:now()};
+    if(isNew) S.vault.sites.unshift(rec);
+    else S.vault.sites[S.vault.sites.findIndex(x=>x.id===s.id)]=rec;
+    d.close(); await push();
+  };
+  const del=el("button",{className:"danger",textContent:"删除站点"});
+  del.onclick=async()=>{if(!confirm("删除「"+s.name+"」？"))return;
+    S.vault.sites=S.vault.sites.filter(x=>x.id!==s.id); d.close(); await push()};
+
+  d.append(el("h2",{textContent:isNew?"新增站点":"编辑站点"}),
+    el("label",{textContent:"站点名称"}),f.name,
+    el("label",{textContent:"① 网址（站点主页）"}),f.site,
+    el("label",{textContent:"② URL（接口地址 base_url）"}),f.baseUrl,
+    el("label",{textContent:"③ 密钥"}),f.key,
+    el("label",{textContent:"可用模型标签（点击选中/取消）"}),tagBox,
+    el("div",{className:"tgrow"},newName,swWrap,addTag),
+    el("label",{textContent:"备注"}),f.note,
+    el("div",{className:"row",style:"margin-top:20px"},save,
+      el("button",{textContent:"取消",onclick:()=>d.close()}),
+      isNew?null:el("div",{style:"margin-left:auto"},del)));
+  document.body.append(d); d.showModal();
+  d.addEventListener("close",()=>{d.remove();drawFilters();drawGrid()});
+  f.name.focus();
+}
+
+/* ---------- 管理标签 ---------- */
+function manageTags(){
+  const d=el("dialog"); const body=el("div");
+  function draw(){
+    body.innerHTML="";
+    if(!S.vault.tags.length) body.append(el("div",{style:"font-size:13px;color:#8b929c;margin-top:10px",
+      textContent:"还没有标签。在站点编辑窗口里可以直接新建。"}));
+    for(const t of S.vault.tags){
+      const nameIn=el("input",{value:t.name});
+      nameIn.onchange=()=>{const v=nameIn.value.trim(); if(v)t.name=v; else nameIn.value=t.name};
+      const sw=el("div",{className:"row",style:"gap:4px"});
+      for(const c of PALETTE){
+        const b=el("button",{className:"sw"+(c===t.color?" sel":""),style:"background:"+c});
+        b.onclick=()=>{t.color=c;draw()}; sw.append(b);
+      }
+      const rm=el("button",{className:"danger",textContent:"删除"});
+      rm.onclick=()=>{
+        const used=S.vault.sites.filter(s=>(s.tags||[]).includes(t.id)).length;
+        if(!confirm("删除标签「"+t.name+"」？"+(used?"它正被 "+used+" 个站点使用，会一并移除。":"")))return;
+        S.vault.tags=S.vault.tags.filter(x=>x.id!==t.id);
+        S.vault.sites.forEach(s=>s.tags=(s.tags||[]).filter(id=>id!==t.id));
+        S.filter.delete(t.id); draw();
+      };
+      body.append(el("div",{className:"tgrow"},nameIn,sw,rm));
+    }
+  }
+  draw();
+  const save=el("button",{className:"primary",textContent:"保存"});
+  save.onclick=async()=>{d.close();await push()};
+  d.append(el("h2",{textContent:"管理标签"}),body,
+    el("div",{className:"row",style:"margin-top:20px"},save,
+      el("button",{textContent:"取消",onclick:()=>{d.close();pull(false)}})));
+  document.body.append(d); d.showModal();
+  d.addEventListener("close",()=>{d.remove();drawFilters();drawGrid()});
+}
+
+/* ---------- 同步 ---------- */
+async function push(){
+  setStatus("保存中…");
+  try{
+    const remote=await gistRead(); let rr=0;
+    try{rr=(await open_(remote,S.pass)).rev||0}catch(e){}
+    if(rr>S.rev){
+      if(!confirm("云端有更新的版本（rev "+rr+" > 本机 "+S.rev+"）。\n确定=用本机覆盖云端，取消=放弃本次修改并拉取云端。")){
+        await pull(true); return;
+      }
+      S.rev=rr;
+    }
+    S.vault.rev=S.rev+1; S.vault.updatedAt=now();
+    await gistWrite(await seal(S.vault,S.pass));
+    S.rev=S.vault.rev; drawFilters(); drawGrid(); setStatus(); toast("已同步");
+  }catch(e){setStatus("保存失败");toast(e.message,1)}
+  idleReset();
+}
+async function pull(loud){
+  try{
+    const v=migrate(await open_(await gistRead(),S.pass));
+    if((v.rev||0)>S.rev){S.vault=v;S.rev=v.rev||0;drawFilters();drawGrid();toast("已拉取云端更新")}
+    else if(loud) toast("已是最新");
+    setStatus();
+  }catch(e){if(loud)toast(e.message,1)}
+}
+function exportJSON(){
+  const a=el("a",{href:URL.createObjectURL(new Blob([JSON.stringify(S.vault,null,2)],
+    {type:"application/json"})),download:"keeper-plaintext-"+Date.now()+".json"});
+  a.click(); URL.revokeObjectURL(a.href);
+  toast("已导出明文备份，请妥善保管",1);
+}
+
+/* ---------- 锁定 ---------- */
+function lock(){
+  clearInterval(window.__poll); clearTimeout(window.__idle);
+  document.querySelectorAll("dialog").forEach(d=>d.remove());
+  S.pass=S.pat=S.vault=null; S.reveal.clear(); S.q=""; S.filter.clear();
+  boot();
+}
+function idleReset(){
+  clearTimeout(window.__idle);
+  window.__idle=setTimeout(()=>{if(S.pass){lock();toast("闲置已自动锁定")}},300000);
+}
+["click","keydown","input"].forEach(e=>document.addEventListener(e,()=>{if(S.pass)idleReset()},true));
+
+function boot(){
+  if(!crypto.subtle){app.innerHTML="<div class=gate>需要 HTTPS 或本地文件环境才能使用加密功能。</div>";return}
+  const dev=devLoad();
+  dev&&dev.pat&&dev.gistId?renderUnlock(dev):renderSetup();
+}
+boot();
+</script>
+</body>
+</html>
