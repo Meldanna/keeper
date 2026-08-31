@@ -16,12 +16,13 @@ button{cursor:pointer;background:#fff;transition:.12s}
 button:hover{background:#f0f2f5}
 button.primary{background:#2f6fed;border-color:#2f6fed;color:#fff}
 button.primary:hover{background:#255fd6}
+button.primary:disabled{opacity:.6;cursor:default}
 button.danger{background:#fff;border-color:#e0b4b4;color:#b3261e}
 button.danger:hover{background:#fdf1f0}
 button.link{border:none;background:none;color:#2f6fed;padding:4px 2px;font-size:12.5px}
 button.link:hover{background:none;text-decoration:underline}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.gate{max-width:430px;margin:10vh auto;padding:26px;background:#fff;border:1px solid #e2e6ea;
+.gate{max-width:430px;margin:8vh auto;padding:26px;background:#fff;border:1px solid #e2e6ea;
      border-radius:14px;box-shadow:0 1px 3px #0000000d}
 .gate h2{margin:0 0 4px;font-size:18px}
 .gate p{margin:0 0 18px;color:#6b7280;font-size:13px}
@@ -32,6 +33,7 @@ button.link:hover{background:none;text-decoration:underline}
      margin-bottom:12px;font-size:13px}
 .gate .who .id{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#8b929c;
      word-break:break-all;margin-top:2px}
+.pickbtn{display:block;width:100%;text-align:left;margin-bottom:6px;padding:9px 11px}
 .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .bar input[type=search]{flex:1;min-width:200px}
 .st{font-size:12px;color:#8b929c;margin-left:auto}
@@ -84,6 +86,7 @@ dialog textarea{resize:vertical;min-height:58px;font-family:ui-monospace,Menlo,m
 const enc=new TextEncoder(),dec=new TextDecoder();
 const API="https://api.github.com",LS="keeper.device.v2",LS_OLD="keeper.device.v1",ITER=600000;
 const PALETTE=["#e8f0fe","#e6f4ea","#fce8e6","#fef7e0","#f3e8fd","#e0f7fa","#fce4ec","#eceff1","#e8f5e9","#fff3e0"];
+const MAX_SCAN=25;
 
 /* ---------- 工具 ---------- */
 const el=(t,p={},...kids)=>{const n=Object.assign(document.createElement(t),p);
@@ -94,7 +97,7 @@ const app=document.getElementById("app");
 function toast(msg,err){
   document.querySelectorAll(".toast").forEach(t=>t.remove());
   const t=el("div",{className:"toast"+(err?" err":""),textContent:msg});
-  document.body.append(t); setTimeout(()=>t.remove(),err?4200:1500);
+  document.body.append(t); setTimeout(()=>t.remove(),err?4600:1500);
 }
 
 /* ---------- 加密 ---------- */
@@ -118,10 +121,10 @@ async function open_(blob,pass){
 }
 const isPassErr=m=>/decrypt|operation-specific|OperationError/i.test(m);
 
-/* ---------- 本机记录（多个 gist） ---------- */
+/* ---------- 本机记录 ---------- */
 function devLoad(){
   try{const d=JSON.parse(localStorage.getItem(LS)); if(d&&Array.isArray(d.profiles))return d}catch(e){}
-  try{ /* 从旧版单条记录迁移 */
+  try{
     const o=JSON.parse(localStorage.getItem(LS_OLD));
     if(o&&o.gistId&&o.pat){
       const p={id:uid(),label:"我的保险库",gistId:o.gistId,pat:o.pat,addedAt:now(),lastUsed:now()};
@@ -134,12 +137,12 @@ const devSave=d=>localStorage.setItem(LS,JSON.stringify(d));
 function devUpsert(gistId,label,patBlob){
   const d=devLoad();
   let p=d.profiles.find(x=>x.gistId===gistId);
-  if(p){ if(label)p.label=label; p.pat=patBlob }
+  if(p){ if(label)p.label=label; if(patBlob)p.pat=patBlob }
   else{ p={id:uid(),label:label||("保险库 "+(d.profiles.length+1)),gistId,pat:patBlob,addedAt:now()};
         d.profiles.push(p) }
   p.lastUsed=now(); d.last=p.id; devSave(d); return p;
 }
-function devTouch(id){const d=devLoad();const p=d.profiles.find(x=>x.id===id);
+function devTouch(id){const d=devLoad(),p=d.profiles.find(x=>x.id===id);
   if(p){p.lastUsed=now();d.last=id;devSave(d)}}
 function devRemove(id){const d=devLoad();
   d.profiles=d.profiles.filter(x=>x.id!==id);
@@ -154,21 +157,41 @@ async function gh(path,opt={}){
   if(!r.ok){let m=r.status+"";try{m+=" "+(await r.json()).message}catch(e){}throw new Error("GitHub: "+m)}
   return r.json();
 }
-async function gistRead(){
-  const g=await gh("/gists/"+S.gistId),f=g.files&&g.files["vault.json"];
+async function readBlobOf(gistId){
+  const g=await gh("/gists/"+gistId),f=g.files&&g.files["vault.json"];
   if(!f) throw new Error("gist 里没有 vault.json");
   return JSON.parse(f.truncated?await(await fetch(f.raw_url)).text():f.content);
 }
+const gistRead=()=>readBlobOf(S.gistId);
 const gistWrite=blob=>gh("/gists/"+S.gistId,{method:"PATCH",
   body:JSON.stringify({files:{"vault.json":{content:JSON.stringify(blob,null,1)}}})});
 const gistCreate=blob=>gh("/gists",{method:"POST",body:JSON.stringify({
-  description:"keeper vault (encrypted)",public:false,
+  description:"encrypted data",public:false,
   files:{"vault.json":{content:JSON.stringify(blob,null,1)}}})});
+
+/* 自动发现：列出自己的 gist，逐个尝试用主口令解密 */
+async function discover(pass,onProgress){
+  const all=await gh("/gists?per_page=100");
+  const cand=(Array.isArray(all)?all:[])
+    .filter(g=>g.files&&g.files["vault.json"])
+    .sort((a,b)=>new Date(b.updated_at)-new Date(a.updated_at))
+    .slice(0,MAX_SCAN);
+  const found=[];
+  for(let i=0;i<cand.length;i++){
+    onProgress&&onProgress(i+1,cand.length);
+    try{
+      const blob=await readBlobOf(cand[i].id);
+      if(!blob||!blob.ct||!blob.salt||!blob.iv) continue;
+      found.push({gistId:cand[i].id,vault:migrate(await open_(blob,pass))});
+    }catch(e){/* 解不开或格式不符，跳过 */}
+  }
+  return found;
+}
 
 /* ---------- 状态 ---------- */
 const S={pass:null,pat:null,gistId:null,profile:null,vault:null,rev:0,
          q:"",filter:new Set(),clipTimer:null};
-const fresh=()=>({rev:1,sites:[],tags:[],updatedAt:now()});
+const fresh=name=>({rev:1,name:(name||"我的保险库"),sites:[],tags:[],updatedAt:now()});
 function migrate(v){
   if(!v.sites){
     const tmap=new Map(); v.tags=[];
@@ -182,9 +205,25 @@ function migrate(v){
     });
     delete v.items;
   }
-  v.tags=v.tags||[]; v.sites=v.sites||[]; return v;
+  v.tags=v.tags||[]; v.sites=v.sites||[]; v.name=v.name||""; return v;
 }
 const tagById=id=>S.vault.tags.find(t=>t.id===id);
+const vaultLabel=v=>((v&&v.name||"").trim())||"未命名";
+
+/* 把云端名称同步到本机列表 */
+function syncLabel(){
+  if(!S.profile) return;
+  const nm=(S.vault&&S.vault.name||"").trim();
+  if(nm&&nm!==S.profile.label){
+    const d=devLoad(),p=d.profiles.find(x=>x.id===S.profile.id);
+    if(p){p.label=nm; devSave(d); S.profile.label=nm}
+  }
+}
+async function enterVault(gistId,vault){
+  S.gistId=gistId; S.vault=vault; S.rev=vault.rev||0;
+  S.profile=devUpsert(gistId,vaultLabel(vault),await seal({pat:S.pat},S.pass));
+  renderMain();
+}
 
 /* ---------- 解锁页 ---------- */
 function renderUnlock(){
@@ -196,24 +235,20 @@ function renderUnlock(){
   const cur=dev.profiles.find(p=>p.id===dev.last)||dev.profiles[0];
 
   const sel=el("select");
-  for(const p of dev.profiles)
-    sel.append(el("option",{value:p.id,textContent:p.label}));
+  for(const p of dev.profiles) sel.append(el("option",{value:p.id,textContent:p.label}));
   sel.value=cur.id;
 
   const who=el("div",{className:"who"});
   function drawWho(){
-    const p=dev.profiles.find(x=>x.id===sel.value);
-    if(!p) return;
+    const p=dev.profiles.find(x=>x.id===sel.value); if(!p)return;
     who.innerHTML="";
-    const cp=el("button",{className:"link",style:"font-size:11.5px;padding:2px 0",
-      textContent:"复制 ID",onclick:()=>copy(p.gistId,"gist ID")});
-    const op=el("button",{className:"link",style:"font-size:11.5px;padding:2px 0",
-      textContent:"在 GitHub 打开",
-      onclick:()=>window.open("https://gist.github.com/"+p.gistId,"_blank","noopener")});
-    who.append(
-      el("div",{textContent:p.label}),
+    who.append(el("div",{textContent:p.label}),
       el("div",{className:"id",textContent:p.gistId}),
-      el("div",{className:"row",style:"gap:14px;margin-top:2px"},cp,op));
+      el("div",{className:"row",style:"gap:14px;margin-top:2px"},
+        el("button",{className:"link",style:"font-size:11.5px;padding:2px 0",textContent:"复制 ID",
+          onclick:()=>copy(p.gistId,"gist ID")}),
+        el("button",{className:"link",style:"font-size:11.5px;padding:2px 0",textContent:"在 GitHub 打开",
+          onclick:()=>window.open("https://gist.github.com/"+p.gistId,"_blank","noopener")})));
   }
 
   const pw=el("input",{type:"password",placeholder:"主口令"});
@@ -228,8 +263,8 @@ function renderUnlock(){
       S.pass=pw.value;
       S.pat=(await open_(p.pat,S.pass)).pat;
       S.gistId=p.gistId; S.profile=p;
-      S.vault=migrate(await open_(await gistRead(),S.pass)); S.rev=S.vault.rev||0;
-      devTouch(p.id); renderMain();
+      S.vault=migrate(await gistRead().then(b=>open_(b,S.pass))); S.rev=S.vault.rev||0;
+      devTouch(p.id); syncLabel(); renderMain();
     }catch(e){
       S.pass=S.pat=S.gistId=S.profile=null;
       go.disabled=false; go.textContent="解锁"; pw.select();
@@ -238,12 +273,12 @@ function renderUnlock(){
   };
   go.onclick=unlock; pw.onkeydown=e=>{if(e.key==="Enter")unlock()};
 
-  const add=el("button",{className:"link",textContent:"＋ 添加另一个 gist",
+  const add=el("button",{className:"link",textContent:"＋ 添加 / 新建保险库",
     onclick:()=>renderSetup(true)});
   const rm=el("button",{className:"link",style:"color:#b3261e",textContent:"移除本机的这条记录"});
   rm.onclick=()=>{
     const p=dev.profiles.find(x=>x.id===sel.value);
-    if(!confirm("从这台设备移除「"+p.label+"」？\n只清本机记录，云端 gist 里的数据不动，随时可以用 gist ID 重新添加。"))return;
+    if(!confirm("从这台设备移除「"+p.label+"」？\n只清本机记录，云端 gist 里的数据不动，随时能重新添加。"))return;
     devRemove(p.id); renderUnlock();
   };
 
@@ -253,69 +288,101 @@ function renderUnlock(){
   kids.push(who,el("label",{textContent:"主口令"}),pw,go,
     el("div",{className:"sep"}),
     el("div",{className:"row",style:"justify-content:space-between"},add,rm));
-  box.append(...kids);
-  app.append(box);
+  box.append(...kids); app.append(box);
   setTimeout(()=>pw.focus(),0);
 }
 
-/* ---------- 新建 / 添加 ---------- */
+/* ---------- 添加 / 新建 ---------- */
 function renderSetup(canCancel){
   app.innerHTML="";
-  const label=el("input",{placeholder:"给它起个名字，如 主库 / 备用库"});
+  const mode=el("select",{},
+    el("option",{value:"auto",textContent:"自动查找我的保险库（推荐）"}),
+    el("option",{value:"id",textContent:"手动填 gist ID"}),
+    el("option",{value:"new",textContent:"新建一个 secret gist"}));
+  const gid=el("input",{placeholder:"32 位 gist ID，或直接粘整个网址"});
+  const vname=el("input",{placeholder:"如 公益站 / 付费站"});
   const p1=el("input",{type:"password",placeholder:"至少 12 位，建议 4-5 个不相关的词"});
   const p2=el("input",{type:"password",placeholder:"再输一次"});
   const pat=el("input",{type:"password",placeholder:"github_pat_... 或 ghp_..."});
-  const mode=el("select",{},el("option",{value:"old",textContent:"添加已有的 gist（填 gist ID）"}),
-                            el("option",{value:"new",textContent:"新建一个 secret gist"}));
-  const gid=el("input",{placeholder:"32 位 gist ID"});
-  const p2wrap=el("div",{},el("label",{textContent:"确认主口令"}),p2);
-  const gidwrap=el("div",{},el("label",{textContent:"gist ID"}),gid);
-  const sync=()=>{const isNew=mode.value==="new";
-    gidwrap.style.display=isNew?"none":""; p2wrap.style.display=isNew?"":"none";
-    go.textContent=isNew?"创建保险库":"添加保险库"};
+  const gidW=el("div",{},el("label",{textContent:"gist ID"}),gid);
+  const nameW=el("div",{},el("label",{textContent:"保险库名称（会同步到所有设备）"}),vname);
+  const p2W=el("div",{},el("label",{textContent:"确认主口令"}),p2);
+  const list=el("div");
   const go=el("button",{className:"primary",style:"width:100%;margin-top:6px"});
+
+  const sync=()=>{
+    const m=mode.value;
+    gidW.style.display=m==="id"?"":"none";
+    nameW.style.display=m==="new"?"":"none";
+    p2W.style.display=m==="new"?"":"none";
+    go.textContent=m==="new"?"创建保险库":m==="id"?"添加保险库":"开始查找";
+    list.innerHTML="";
+  };
   mode.onchange=sync;
 
+  function drawFound(found){
+    list.innerHTML="";
+    list.append(el("div",{style:"font-size:12px;color:#6b7280;margin:16px 0 6px",
+      textContent:"找到 "+found.length+" 个，点一个打开（都已加入本机列表）："}));
+    for(const f of found){
+      const b=el("button",{className:"pickbtn"},
+        el("div",{style:"font-weight:600;font-size:13.5px",
+          textContent:vaultLabel(f.vault)+" · "+(f.vault.sites||[]).length+" 个站点"}),
+        el("div",{style:"font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#8b929c",
+          textContent:f.gistId}));
+      b.onclick=()=>enterVault(f.gistId,f.vault);
+      list.append(b);
+    }
+  }
+
   go.onclick=async()=>{
-    const isNew=mode.value==="new";
+    const m=mode.value;
     if(p1.value.length<12) return toast("主口令太短，至少 12 位",1);
-    if(isNew&&p1.value!==p2.value) return toast("两次输入不一致",1);
+    if(m==="new"&&p1.value!==p2.value) return toast("两次输入不一致",1);
     if(!pat.value.trim()) return toast("请填 PAT",1);
-    if(!isNew&&!gid.value.trim()) return toast("请填 gist ID",1);
-    go.disabled=true; go.textContent="处理中…";
+    if(m==="id"&&!gid.value.trim()) return toast("请填 gist ID",1);
+    go.disabled=true; go.textContent="处理中…"; list.innerHTML="";
     try{
       S.pass=p1.value; S.pat=pat.value.trim();
-      if(isNew){
-        S.vault=fresh();
-        S.gistId=(await gistCreate(await seal(S.vault,S.pass))).id; S.rev=1;
+      if(m==="new"){
+        const v=fresh(vname.value.trim());
+        const id=(await gistCreate(await seal(v,S.pass))).id;
+        await enterVault(id,v);
+        toast("已创建 · gist "+id);
+      }else if(m==="id"){
+        const id=gid.value.trim().replace(/^.*\//,"");
+        const v=migrate(await open_(await readBlobOf(id),S.pass));
+        await enterVault(id,v);
+        toast("已添加 · "+vaultLabel(v));
       }else{
-        S.gistId=gid.value.trim().replace(/^.*\//,"");
-        S.vault=migrate(await open_(await gistRead(),S.pass)); S.rev=S.vault.rev||0;
+        const found=await discover(S.pass,(i,n)=>{go.textContent="查找中 "+i+"/"+n+"…"});
+        if(!found.length) throw new Error("没找到能用这个口令解开的保险库。检查口令和 PAT，或改用「手动填 gist ID」。");
+        const blob=await seal({pat:S.pat},S.pass);
+        for(const f of found) devUpsert(f.gistId,vaultLabel(f.vault),blob);
+        if(found.length===1){ await enterVault(found[0].gistId,found[0].vault); toast("已解锁 · "+vaultLabel(found[0].vault)); }
+        else{ go.disabled=false; sync(); drawFound(found); }
       }
-      S.profile=devUpsert(S.gistId,label.value.trim(),await seal({pat:S.pat},S.pass));
-      renderMain();
-      toast(isNew?"已创建 · gist "+S.gistId:"已添加 · "+S.profile.label);
     }catch(e){
-      S.pass=S.pat=S.gistId=S.profile=null; go.disabled=false; sync();
+      S.pass=S.pat=S.gistId=S.profile=null;
+      go.disabled=false; sync();
       toast(isPassErr(e.message)?"口令错误或数据损坏":e.message,1);
     }
   };
 
-  const box=el("div",{className:"gate"},
+  app.append(el("div",{className:"gate"},
     el("h2",{textContent:canCancel?"添加保险库":"初始化"}),
     el("p",{textContent:"主口令不会上传，也无法找回。请先抄在纸上。"}),
-    el("label",{textContent:"存储位置"}),mode,
-    gidwrap,
-    el("label",{textContent:"名称（可留空）"}),label,
+    el("label",{textContent:"方式"}),mode,
+    gidW,nameW,
     el("label",{textContent:"主口令"}),p1,
-    p2wrap,
+    p2W,
     el("label",{textContent:"GitHub PAT（权限只需 gist）"}),pat,
-    go,
+    go,list,
     canCancel?el("button",{className:"link",textContent:"← 返回解锁",
-      style:"width:100%;margin-top:10px",onclick:renderUnlock}):null);
-  app.append(box); sync();
-  if(!canCancel) mode.value="new",sync();
-  (canCancel?gid:p1).focus();
+      style:"width:100%;margin-top:10px",onclick:renderUnlock}):null));
+  sync();
+  if(!canCancel){mode.value="new";sync()}
+  (canCancel?p1:vname).focus();
 }
 
 /* ---------- 主界面 ---------- */
@@ -329,6 +396,7 @@ function renderMain(){
       el("button",{className:"primary",textContent:"+ 新增站点",onclick:()=>editSite(null)}),
       el("button",{textContent:"管理标签",onclick:manageTags}),
       el("button",{textContent:"同步",onclick:()=>pull(true)}),
+      el("button",{textContent:"重命名",onclick:renameVault}),
       el("button",{textContent:"备份",onclick:exportJSON}),
       el("button",{textContent:"切换 / 锁定",onclick:lock}),
       el("span",{className:"st",id:"st"})),
@@ -339,7 +407,14 @@ function renderMain(){
   idleReset();
 }
 const setStatus=t=>{const n=document.getElementById("st");
-  if(n)n.textContent=t||((S.profile?S.profile.label+" · ":"")+S.vault.sites.length+" 个站点 · rev "+S.rev)};
+  if(n)n.textContent=t||(vaultLabel(S.vault)+" · "+S.vault.sites.length+" 个站点 · rev "+S.rev)};
+
+async function renameVault(){
+  const nm=prompt("保险库名称（会同步到所有设备）",(S.vault.name||"").trim());
+  if(nm==null) return;
+  const v=nm.trim(); if(!v) return toast("名称不能为空",1);
+  S.vault.name=v; await push(); syncLabel(); setStatus();
+}
 
 function drawFilters(){
   const box=document.getElementById("filters"); if(!box)return;
@@ -487,6 +562,8 @@ function editSite(s){
 
 /* ---------- 管理标签 ---------- */
 function manageTags(){
+  const snapshot=JSON.stringify({tags:S.vault.tags,sites:S.vault.sites});
+  let committed=false;
   const d=el("dialog"), body=el("div");
   function draw(){
     body.innerHTML="";
@@ -511,12 +588,15 @@ function manageTags(){
   }
   draw();
   const save=el("button",{className:"primary",textContent:"保存"});
-  save.onclick=async()=>{d.close();await push()};
+  save.onclick=async()=>{committed=true;d.close();await push()};
   d.append(el("h2",{textContent:"管理标签"}),body,
     el("div",{className:"row",style:"margin-top:20px"},save,
-      el("button",{textContent:"取消",onclick:()=>{d.close();pull(false)}})));
+      el("button",{textContent:"取消",onclick:()=>d.close()})));
   document.body.append(d); d.showModal();
-  d.addEventListener("close",()=>{d.remove();drawFilters();drawGrid()});
+  d.addEventListener("close",()=>{
+    if(!committed){const o=JSON.parse(snapshot);S.vault.tags=o.tags;S.vault.sites=o.sites}
+    d.remove(); drawFilters(); drawGrid();
+  });
 }
 
 /* ---------- 同步 ---------- */
@@ -540,7 +620,7 @@ async function push(){
 async function pull(loud){
   try{
     const v=migrate(await open_(await gistRead(),S.pass));
-    if((v.rev||0)>S.rev){S.vault=v;S.rev=v.rev||0;drawFilters();drawGrid();toast("已拉取云端更新")}
+    if((v.rev||0)>S.rev){S.vault=v;S.rev=v.rev||0;syncLabel();drawFilters();drawGrid();toast("已拉取云端更新")}
     else if(loud) toast("已是最新");
     setStatus();
   }catch(e){if(loud)toast(e.message,1)}
